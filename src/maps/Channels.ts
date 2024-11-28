@@ -24,6 +24,7 @@ import { INotificationChecker } from "../util/Unreads";
 import { Override, OverrideField } from "revolt-api";
 import type { APIRoutes } from "revolt-api/dist/routes";
 import { bitwiseAndEq, calculatePermission } from "../permissions/calculator";
+import { components } from "revolt-api/dist/schema";
 
 export class Channel {
     client: Client;
@@ -78,6 +79,12 @@ export class Channel {
      * @requires `Group`, `TextChannel`, `VoiceChannel`
      */
     icon: Nullable<File> = null;
+
+    /**
+     * Channel banner.
+     * @requires `TextChannel`
+     */
+    banner: { icon: File }[] = [];
 
     /**
      * Channel description.
@@ -259,7 +266,7 @@ export class Channel {
         return this.client.unreads?.getUnread(this._id)?.mentions ?? [];
     }
 
-    constructor(client: Client, data: ChannelI) {
+    constructor(client: Client, data: any) {
         this.client = client;
 
         this._id = data._id;
@@ -295,6 +302,7 @@ export class Channel {
                 if (data.channel_type === "TextChannel") {
                     this.last_message_id = toNullable(data.last_message_id);
                     this.nsfw = toNullable(data.nsfw);
+                    this.banner = data.banner;
                 }
 
                 break;
