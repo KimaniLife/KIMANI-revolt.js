@@ -318,7 +318,6 @@ export class Channel {
     @action update(data: any, clear: FieldsChannel[] = []) {
         const apply = (key: string, target?: string) => {
             if (
-                // @ts-expect-error TODO: clean up types here
                 typeof data[key] !== "undefined" &&
                 // @ts-expect-error TODO: clean up types here
                 !isEqual(this[target ?? key], data[key])
