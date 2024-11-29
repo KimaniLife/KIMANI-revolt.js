@@ -708,13 +708,13 @@ export class Channel {
     }
 }
 
-export default class Channels extends Collection<string, Channel> {
+export default class Channels extends Collection<string, any> {
     constructor(client: Client) {
         super(client);
         this.createObj = this.createObj.bind(this);
     }
 
-    @action $get(id: string, data?: ChannelI) {
+    @action $get(id: string, data?: any) {
         const channel = this.get(id)!;
         if (data) channel.update(data);
         return channel;
@@ -744,7 +744,7 @@ export default class Channels extends Collection<string, Channel> {
      * @param id Channel ID
      * @returns The channel
      */
-    async fetch(id: string, data?: ChannelI) {
+    async fetch(id: string, data?: any) {
         if (this.has(id)) return this.$get(id);
         const res =
             data ?? (await this.client.api.get(`/channels/${id as ""}`));
