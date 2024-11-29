@@ -315,7 +315,7 @@ export class Channel {
         });
     }
 
-    @action update(data: Partial<ChannelI>, clear: FieldsChannel[] = []) {
+    @action update(data: any, clear: FieldsChannel[] = []) {
         const apply = (key: string, target?: string) => {
             if (
                 // @ts-expect-error TODO: clean up types here
@@ -346,6 +346,7 @@ export class Channel {
         apply("role_permissions");
         apply("name");
         apply("icon");
+        apply("banner");
         apply("description");
         apply("recipients", "recipient_ids");
         apply("last_message_id");
@@ -387,7 +388,7 @@ export class Channel {
      * Edit a channel
      * @param data Edit data
      */
-    async edit(data: DataEditChannel) {
+    async edit(data: any) {
         this.update(
             await this.client.api.patch(`/channels/${this._id as ""}`, data),
         );
@@ -758,7 +759,7 @@ export default class Channels extends Collection<string, Channel> {
      * @param emit Whether to emit creation event
      * @returns Channel
      */
-    createObj(data: ChannelI, emit?: boolean | number) {
+    createObj(data: any, emit?: boolean | number) {
         if (this.has(data._id)) return this.$get(data._id);
         const channel = new Channel(this.client, data);
 

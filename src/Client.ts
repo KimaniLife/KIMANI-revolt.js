@@ -79,11 +79,11 @@ export declare interface Client {
         listener: (message: Message, packet: ClientboundNotification) => void,
     ): this;
 
-    on(event: "channel/create", listener: (channel: Channel) => void): this;
-    on(event: "channel/update", listener: (channel: Channel) => void): this;
+    on(event: "channel/create", listener: (channel: any) => void): this;
+    on(event: "channel/update", listener: (channel: any) => void): this;
     on(
         event: "channel/delete",
-        listener: (id: string, channel?: Channel) => void,
+        listener: (id: string, channel?: any) => void,
     ): this;
 
     on(event: "server/update", listener: (server: Server) => void): this;
