@@ -81,7 +81,7 @@ export type ClientboundNotification =
     | {
           type: "ChannelUpdate";
           id: string;
-          data: Partial<Channel>;
+          data: any;
           clear?: FieldsChannel[];
       }
     | { type: "ChannelDelete"; id: string }
