@@ -84,7 +84,7 @@ export class Channel {
      * Channel banner.
      * @requires `TextChannel`
      */
-    banner: { icon: File }[] = [];
+    banner: { icon: File; link: Nullable<string> }[] = [];
 
     /**
      * Channel description.
