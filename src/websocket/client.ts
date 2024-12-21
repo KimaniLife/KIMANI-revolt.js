@@ -676,7 +676,10 @@ export class WebSocketClient {
                                     relationship: packet.status,
                                 });
                             } else {
-                                this.client.users.createObj(packet.user);
+                                this.client.users.createObj({
+                                    ...packet.user,
+                                    relationship: packet.status,
+                                });
                             }
 
                             break;
