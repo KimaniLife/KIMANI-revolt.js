@@ -114,6 +114,7 @@ export class Channel {
      * @requires `Group`, `TextChannel`, `VoiceChannel`
      */
     nsfw: Nullable<boolean> = null;
+    hide_title: Nullable<boolean> = null;
 
     /**
      * The group owner.
@@ -288,6 +289,7 @@ export class Channel {
                 this.icon = toNullable(data.icon);
                 this.permissions = toNullable(data.permissions);
                 this.nsfw = toNullable(data.nsfw);
+                this.hide_title = toNullable(data.hide_title);
                 break;
             }
             case "TextChannel":
@@ -302,6 +304,7 @@ export class Channel {
                 if (data.channel_type === "TextChannel") {
                     this.last_message_id = toNullable(data.last_message_id);
                     this.nsfw = toNullable(data.nsfw);
+                    this.hide_title = toNullable(data.hide_title);
                     this.banner = data.banner;
                 }
 
@@ -350,6 +353,7 @@ export class Channel {
         apply("recipients", "recipient_ids");
         apply("last_message_id");
         apply("nsfw");
+        apply("hide_title");
     }
 
     @action updateGroupJoin(user: string) {
