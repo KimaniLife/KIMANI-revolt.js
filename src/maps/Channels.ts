@@ -9,7 +9,7 @@ import type {
 } from "revolt-api";
 import type { File } from "revolt-api";
 import type { Member } from "revolt-api";
-import type { User } from "revolt-api";
+import type { User as APIUser } from "revolt-api";
 
 import { action, computed, makeAutoObservable, runInAction } from "mobx";
 import isEqual from "lodash.isequal";
@@ -26,11 +26,14 @@ import type { APIRoutes } from "revolt-api/dist/routes";
 import { bitwiseAndEq, calculatePermission } from "../permissions/calculator";
 import { components } from "revolt-api/dist/schema";
 
+type ExtendedChannelType = ChannelI["channel_type"] | "MarketplaceDM";
+console.error("🔥 USING LOCAL REVOLT.JS SOURCE 🔥");
+
 export class Channel {
     client: Client;
 
     _id: string;
-    channel_type: ChannelI["channel_type"];
+    channel_type: ExtendedChannelType;
 
     /**
      * Whether this DM is active.
@@ -105,6 +108,24 @@ export class Channel {
     last_message_id: Nullable<string> = null;
 
     /**
+     * Marketplace buyer user id
+     * @requires `MarketplaceDM`
+     */
+    buyer_id: Nullable<string> = null;
+
+    /**
+     * Marketplace seller user id
+     * @requires `MarketplaceDM`
+     */
+    seller_id: Nullable<string> = null;
+
+    /**
+     * Marketplace listing id
+     * @requires `MarketplaceDM`
+     */
+    listing_id: Nullable<string> = null;
+
+    /**
      * Users typing in channel.
      */
     typing_ids: Set<string> = new Set();
@@ -139,11 +160,13 @@ export class Channel {
      * @requires `DM`
      */
     get recipient() {
-        const user_id = this.recipient_ids?.find(
-            (x) => this.client.user!._id !== x,
-        );
-        if (!user_id) return;
+        if (!this.client.user || !this.recipient_ids) return;
 
+        const user_id = this.recipient_ids.find(
+            (x) => x !== this.client.user!._id,
+        );
+
+        if (!user_id) return;
         return this.client.users.get(user_id);
     }
 
@@ -167,11 +190,17 @@ export class Channel {
     }
 
     /**
-     * Group recipients.
-     * @requires `Group`
+     * Channel recipients
+     * - MarketplaceDM → buyer + seller
+     * - Otros → recipient_ids resueltos
+     */
+    /**
+     * Channel recipients
      */
     get recipients() {
-        return this.recipient_ids?.map((id) => this.client.users.get(id));
+        return this.recipient_ids
+            ?.map((id) => this.client.users.get(id))
+            .filter(Boolean);
     }
 
     /**
@@ -181,6 +210,24 @@ export class Channel {
         return Array.from(this.typing_ids).map((id) =>
             this.client.users.get(id),
         );
+    }
+
+    /**
+     * Marketplace buyer
+     * @requires MarketplaceDM
+     */
+    get buyer() {
+        if (!this.buyer_id) return;
+        return this.client.users.get(this.buyer_id);
+    }
+
+    /**
+     * Marketplace seller
+     * @requires MarketplaceDM
+     */
+    get seller() {
+        if (!this.seller_id) return;
+        return this.client.users.get(this.seller_id);
     }
 
     /**
@@ -278,6 +325,18 @@ export class Channel {
                 this.active = toNullable(data.active);
                 this.recipient_ids = toNullable(data.recipients);
                 this.last_message_id = toNullable(data.last_message_id);
+                break;
+            }
+            case "MarketplaceDM": {
+                this.recipient_ids = toNullable(data.recipients);
+                this.last_message_id = toNullable(data.last_message_id);
+
+                this.buyer_id = toNullable(data.buyer);
+                this.seller_id = toNullable(data.seller);
+                this.listing_id = toNullable(data.listing_id);
+
+                this.active = true;
+
                 break;
             }
             case "Group": {
@@ -525,7 +584,7 @@ export class Channel {
         const data = (await this.client.api.get(
             `/channels/${this._id as ""}/messages`,
             { ...params, include_users: true },
-        )) as { messages: MessageI[]; users: User[]; members?: Member[] };
+        )) as { messages: MessageI[]; users: APIUser[]; members?: Member[] };
         return runInAction(() => {
             return {
                 messages: data.messages.map(this.client.messages.createObj),
@@ -557,7 +616,7 @@ export class Channel {
         const data = (await this.client.api.post(
             `/channels/${this._id as ""}/search`,
             { ...params, include_users: true },
-        )) as { messages: MessageI[]; users: User[]; members?: Member[] };
+        )) as { messages: MessageI[]; users: APIUser[]; members?: Member[] };
         return runInAction(() => {
             return {
                 messages: data.messages.map(this.client.messages.createObj),
@@ -682,11 +741,12 @@ export class Channel {
      * @returns File URL
      */
     generateIconURL(...args: FileArgs) {
-        if (this.channel_type === "DirectMessage") {
-            return this.client.generateFileURL(
-                this.recipient?.avatar ?? undefined,
-                ...args,
-            );
+        if (
+            this.channel_type === "DirectMessage" ||
+            this.channel_type === "MarketplaceDM"
+        ) {
+            const avatar = this.recipient?.avatar ?? undefined;
+            return this.client.generateFileURL(avatar, ...args);
         }
 
         return this.client.generateFileURL(this.icon ?? undefined, ...args);
@@ -705,6 +765,11 @@ export class Channel {
      * @returns Whether we have this permission
      */
     @computed havePermission(...permission: (keyof typeof Permission)[]) {
+        // ✅ MarketplaceDM: permisos siempre permitidos (el backend valida)
+        if (this.channel_type === "MarketplaceDM") {
+            return true;
+        }
+
         return bitwiseAndEq(
             this.permission,
             ...permission.map((x) => Permission[x]),
@@ -765,6 +830,14 @@ export default class Channels extends Collection<string, any> {
     createObj(data: any, emit?: boolean | number) {
         if (this.has(data._id)) return this.$get(data._id);
         const channel = new Channel(this.client, data);
+
+        console.log(
+            "[Channel created]",
+            channel._id,
+            channel.channel_type,
+            channel.recipient_ids,
+            channel.recipient,
+        );
 
         runInAction(() => {
             this.set(data._id, channel);

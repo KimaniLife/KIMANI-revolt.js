@@ -164,6 +164,8 @@ export function calculatePermission(
                     return perm.toNumber();
                 }
             }
+            default:
+                return 0;
         }
     }
 }
