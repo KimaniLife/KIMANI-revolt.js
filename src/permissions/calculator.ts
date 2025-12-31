@@ -152,9 +152,11 @@ export function calculatePermission(
             perm = perm.and(ALLOW_IN_TIMEOUT);
           }
 
-          return perm.toNumber();
+                    return perm.toNumber();
+                }
+            }
+            default:
+                return 0;
         }
-      }
     }
-  }
 }
