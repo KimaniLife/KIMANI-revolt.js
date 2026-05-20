@@ -746,8 +746,52 @@ export class WebSocketClient {
 
             const timeouts: Record<string, number> = {};
             const handle = async (msg: WebSocket.MessageEvent) => {
-                const data = msg.data;
-                if (typeof data !== "string") return;
+                let data: any = msg.data;
+
+                // Defensive: Capacitor Android WebView occasionally delivers
+                // larger text WS frames as Blob instead of string (observed
+                // for the Revolt `Ready` snapshot — many KB of JSON containing
+                // users/channels/servers/members/emojis). The original
+                // `typeof data !== "string"` check silently dropped these,
+                // leaving the client with only `Authenticated` and never
+                // populating any of the collections — visible to users as
+                // "WS connected but home is empty / serverCount=0" while
+                // the exact same account loads fine in a desktop browser.
+                // Decode Blob/ArrayBuffer/typed-array to string in-place so
+                // the downstream JSON.parse + process(packet) path works
+                // regardless of how the WebView surfaces the frame.
+                try {
+                    if (typeof data !== "string") {
+                        if (typeof Blob !== "undefined" && data instanceof Blob) {
+                            data = await data.text();
+                        } else if (data instanceof ArrayBuffer) {
+                            data = new TextDecoder("utf-8").decode(
+                                new Uint8Array(data),
+                            );
+                        } else if (
+                            ArrayBuffer.isView(data) &&
+                            !(data instanceof DataView)
+                        ) {
+                            data = new TextDecoder("utf-8").decode(
+                                data as ArrayBufferView,
+                            );
+                        }
+                    }
+                } catch (decodeErr) {
+                    console.warn(
+                        "[Revolt.js WS] failed to decode non-string frame",
+                        decodeErr,
+                    );
+                    return;
+                }
+
+                if (typeof data !== "string") {
+                    console.warn(
+                        "[Revolt.js WS] dropping frame of unsupported type",
+                        Object.prototype.toString.call(data),
+                    );
+                    return;
+                }
 
                 if (this.client.debug) console.debug("[>] PACKET", data);
                 const packet = JSON.parse(data) as ClientboundNotification;
