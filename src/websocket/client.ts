@@ -130,6 +130,21 @@ export class WebSocketClient {
                         }
 
                         case "Ready": {
+                            // KIMANI optimisation: capture the self user_id
+                            // up front so we can selectively hydrate only the
+                            // current user's own Member entries during the
+                            // Ready transaction. Non-self members are deferred
+                            // to the lazy `server.syncMembers()` path (already
+                            // triggered by MemberSidebar / Members page on
+                            // mount). On large accounts the Ready packet can
+                            // include thousands of members across all servers,
+                            // and creating an observable for each one inside
+                            // a single MobX runInAction blocks the main thread
+                            // for several seconds on slow devices/networks.
+                            const __selfUserId = packet.users.find(
+                                (x) => x.relationship === "User",
+                            )!._id;
+
                             runInAction(() => {
                                 if (packet.type !== "Ready") throw 0;
 
@@ -146,7 +161,9 @@ export class WebSocketClient {
                                 }
 
                                 for (const member of packet.members) {
-                                    this.client.members.createObj(member);
+                                    if (member._id.user === __selfUserId) {
+                                        this.client.members.createObj(member);
+                                    }
                                 }
 
                                 for (const emoji of packet.emojis!) {
@@ -154,11 +171,8 @@ export class WebSocketClient {
                                 }
                             });
 
-                            this.client.user = this.client.users.get(
-                                packet.users.find(
-                                    (x) => x.relationship === "User",
-                                )!._id,
-                            )!;
+                            this.client.user =
+                                this.client.users.get(__selfUserId)!;
 
                             this.client.emit("ready");
                             this.ready = true;
