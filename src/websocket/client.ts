@@ -130,27 +130,42 @@ export class WebSocketClient {
                         }
 
                         case "Ready": {
-                            // KIMANI optimisation: capture the self user_id
-                            // up front so we can selectively hydrate only the
-                            // current user's own Member entries during the
-                            // Ready transaction. Non-self members are deferred
-                            // to the lazy `server.syncMembers()` path (already
-                            // triggered by MemberSidebar / Members page on
-                            // mount). On large accounts the Ready packet can
-                            // include thousands of members across all servers,
-                            // and creating an observable for each one inside
-                            // a single MobX runInAction blocks the main thread
-                            // for several seconds on slow devices/networks.
-                            const __selfUserId = packet.users.find(
+                            // KIMANI startup optimisation — two-phase hydration.
+                            //
+                            // The Revolt `Ready` packet is a full snapshot of
+                            // every server, channel, user and emoji the account
+                            // can see. Building a MobX observable for each entity
+                            // inside a single synchronous `runInAction` blocks the
+                            // main thread for seconds on large accounts, and the
+                            // whole UI is gated behind it — so the user stares at a
+                            // loading spinner the entire time.
+                            //
+                            // We hydrate in two phases instead:
+                            //   Phase 1 (synchronous, tiny): the self user + every
+                            //     server + every channel + the self member. This is
+                            //     exactly what the app's render gate waits on
+                            //     (servers/channels size), so the communities list
+                            //     paints immediately.
+                            //   Phase 2 (async, chunked): the bulk of users and all
+                            //     emojis, hydrated in batches that yield to the
+                            //     event loop between each, so avatars/names fill in
+                            //     without ever freezing the main thread.
+                            //
+                            // Non-self members are still deferred to the lazy
+                            // `server.syncMembers()` path (MemberSidebar / Members
+                            // page on mount), so they are not touched here.
+                            const selfUserId = packet.users.find(
                                 (x) => x.relationship === "User",
                             )!._id;
+                            const selfUser = packet.users.find(
+                                (x) => x._id === selfUserId,
+                            )!;
 
+                            // Phase 1 — minimal synchronous hydration for paint.
                             runInAction(() => {
                                 if (packet.type !== "Ready") throw 0;
 
-                                for (const user of packet.users) {
-                                    this.client.users.createObj(user);
-                                }
+                                this.client.users.createObj(selfUser);
 
                                 for (const channel of packet.channels) {
                                     this.client.channels.createObj(channel);
@@ -161,25 +176,18 @@ export class WebSocketClient {
                                 }
 
                                 for (const member of packet.members) {
-                                    if (member._id.user === __selfUserId) {
+                                    if (member._id.user === selfUserId) {
                                         this.client.members.createObj(member);
                                     }
-                                }
-
-                                for (const emoji of packet.emojis!) {
-                                    this.client.emojis.createObj(emoji);
                                 }
                             });
 
                             this.client.user =
-                                this.client.users.get(__selfUserId)!;
+                                this.client.users.get(selfUserId)!;
 
                             this.client.emit("ready");
                             this.ready = true;
                             resolve();
-
-                            // Sync unreads.
-                            this.client.unreads?.sync();
 
                             // Setup heartbeat.
                             if (this.client.heartbeat > 0) {
@@ -220,6 +228,54 @@ export class WebSocketClient {
                                     }
                                 }, this.client.heartbeat * 1e3) as unknown as number;
                             }
+
+                            // Phase 2 — hydrate the remaining users + emojis off
+                            // the critical path, in event-loop-yielding chunks so
+                            // the freshly-painted UI stays responsive. This is
+                            // awaited: the WS message queue (see `ws.onmessage`
+                            // below) processes packets one at a time, so awaiting
+                            // here keeps ordering intact — buffered live events
+                            // apply on top of a fully-hydrated snapshot rather than
+                            // racing it. First paint already happened above via
+                            // `resolve()`, so the await costs nothing the user sees.
+                            const HYDRATE_CHUNK = 500;
+                            const yieldToEventLoop = () =>
+                                new Promise<void>((r) => setTimeout(r, 0));
+
+                            const remainingUsers = packet.users.filter(
+                                (u) => u._id !== selfUserId,
+                            );
+                            for (
+                                let i = 0;
+                                i < remainingUsers.length;
+                                i += HYDRATE_CHUNK
+                            ) {
+                                const slice = remainingUsers.slice(
+                                    i,
+                                    i + HYDRATE_CHUNK,
+                                );
+                                runInAction(() => {
+                                    for (const user of slice) {
+                                        this.client.users.createObj(user);
+                                    }
+                                });
+                                await yieldToEventLoop();
+                            }
+
+                            const emojis = packet.emojis ?? [];
+                            for (let i = 0; i < emojis.length; i += HYDRATE_CHUNK) {
+                                const slice = emojis.slice(i, i + HYDRATE_CHUNK);
+                                runInAction(() => {
+                                    for (const emoji of slice) {
+                                        this.client.emojis.createObj(emoji);
+                                    }
+                                });
+                                await yieldToEventLoop();
+                            }
+
+                            // Unreads depend on channels (hydrated in phase 1);
+                            // sync after the bulk so it never competes with paint.
+                            this.client.unreads?.sync();
 
                             break;
                         }
