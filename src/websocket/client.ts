@@ -346,6 +346,19 @@ export class WebSocketClient {
                                     channel.last_message_id = message._id;
 
                                     if (
+                                        message.author_id ===
+                                        this.client.user!._id
+                                    ) {
+                                        // Own message echo — the author has
+                                        // already seen it; keep the channel
+                                        // acked so our own messages never
+                                        // show an unread mark.
+                                        this.client.unreads?.markRead(
+                                            message.channel_id,
+                                            message._id,
+                                            true,
+                                        );
+                                    } else if (
                                         this.client.unreads &&
                                         message.mention_ids?.includes(
                                             this.client.user!._id,

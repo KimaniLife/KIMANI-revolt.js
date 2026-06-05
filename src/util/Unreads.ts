@@ -42,6 +42,19 @@ export default class Unreads {
             this.loaded = true;
             for (const unread of unreads) {
                 const { _id, ...data } = unread;
+
+                // Never let the server snapshot regress a channel we
+                // already marked read locally — acks are debounced and
+                // may not have reached the server yet (e.g. resync on
+                // reconnect right after sending a message).
+                const existing = this.channels.get(_id.channel);
+                if (
+                    existing?.last_id &&
+                    (data.last_id ?? "0").localeCompare(existing.last_id) < 1
+                ) {
+                    continue;
+                }
+
                 this.channels.set(_id.channel, data);
             }
         });
