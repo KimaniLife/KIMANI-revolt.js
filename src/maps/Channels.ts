@@ -831,14 +831,6 @@ export default class Channels extends Collection<string, any> {
         if (this.has(data._id)) return this.$get(data._id);
         const channel = new Channel(this.client, data);
 
-        console.log(
-            "[Channel created]",
-            channel._id,
-            channel.channel_type,
-            channel.recipient_ids,
-            channel.recipient,
-        );
-
         runInAction(() => {
             this.set(data._id, channel);
         });

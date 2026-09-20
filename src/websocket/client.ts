@@ -46,6 +46,20 @@ export class WebSocketClient {
     connected: boolean;
     ready: boolean;
 
+    /**
+     * KIMANI: the live socket's own `Ready` said the local user is online, so
+     * for as long as this socket lives NO other source may claim the local
+     * user is offline (see `User.update`). The presence session exists on the
+     * server the moment `Authenticate` succeeds, so an `online: false` for
+     * ourselves can only be stale: a REST payload the server computed BEFORE
+     * this socket authenticated but that is delivered after `Ready` (slow
+     * network, retried roster sync), or a presence broadcast from another
+     * session's teardown racing our creation. Cleared whenever the socket goes
+     * away, so a real drop still greys everything out.
+     */
+    selfOnline: boolean;
+    selfUserId?: string;
+
     ping?: number;
 
     constructor(client: Client) {
@@ -53,6 +67,7 @@ export class WebSocketClient {
 
         this.connected = false;
         this.ready = false;
+        this.selfOnline = false;
     }
 
     /**
@@ -62,6 +77,7 @@ export class WebSocketClient {
         clearInterval(this.heartbeat);
         this.connected = false;
         this.ready = false;
+        this.selfOnline = false;
 
         if (
             typeof this.ws !== "undefined" &&
@@ -212,6 +228,13 @@ export class WebSocketClient {
 
                             this.client.user =
                                 this.client.users.get(selfUserId)!;
+
+                            // Pin our own presence to this socket (see the
+                            // `selfOnline` field). Only when the server said
+                            // online: an Invisible account is reported offline
+                            // on purpose and must stay that way.
+                            this.selfUserId = selfUserId;
+                            this.selfOnline = selfUser.online === true;
 
                             this.client.emit("ready");
                             this.ready = true;
@@ -1000,6 +1023,7 @@ export class WebSocketClient {
 
                 this.connected = false;
                 this.ready = false;
+                this.selfOnline = false;
 
                 runInAction(() => {
                     [...this.client.users.values()].forEach(

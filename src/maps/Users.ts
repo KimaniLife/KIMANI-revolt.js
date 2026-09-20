@@ -97,7 +97,22 @@ export class User {
         apply("badges");
         apply("status");
         apply("relationship");
-        apply("online");
+        // Our own presence belongs to our live socket: while it is authenticated
+        // and its Ready said we are online, an `online: false` about ourselves
+        // is stale by construction (a REST payload computed before the socket
+        // authenticated but delivered after Ready, a teardown broadcast from a
+        // previous session) and must not grey out our own dot. See
+        // `WebSocketClient.selfOnline`.
+        const ws = this.client.websocket;
+        if (
+            !(
+                data.online === false &&
+                ws?.selfOnline &&
+                ws.selfUserId === this._id
+            )
+        ) {
+            apply("online");
+        }
         apply("privileged");
         apply("flags");
         apply("bot");
