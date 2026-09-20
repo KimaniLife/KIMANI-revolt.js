@@ -145,7 +145,7 @@ const configMemory = new Map<string, { value: RevoltConfig; at: number }>();
 const configInflight = new Map<string, Promise<RevoltConfig>>();
 const configStorageKey = (url: string) => `revolt:config:${url}`;
 
-function readCachedConfig(url: string) {
+function readCachedConfig(url: string, allowStale = false) {
     const hit = configMemory.get(url);
     if (hit) return hit;
 
@@ -157,7 +157,7 @@ function readCachedConfig(url: string) {
         if (
             !parsed?.value ||
             typeof parsed.at !== "number" ||
-            Date.now() - parsed.at > CONFIG_MAX_AGE_MS
+            (!allowStale && Date.now() - parsed.at > CONFIG_MAX_AGE_MS)
         ) {
             return undefined;
         }
@@ -331,7 +331,17 @@ export class Client extends EventEmitter {
             return;
         }
 
-        this.configuration = await this.loadConfiguration();
+        try {
+            this.configuration = await this.loadConfiguration();
+        } catch (err) {
+            // A copy older than CONFIG_MAX_AGE_MS is not trusted while the
+            // network works, but with no network at all (cold start offline
+            // after a long absence) an old config beats no app: the endpoints
+            // it lists (ws, autumn, january) change very rarely.
+            const stale = readCachedConfig(this.apiURL, true);
+            if (!stale) throw err;
+            this.configuration = stale.value;
+        }
     }
 
     /**
