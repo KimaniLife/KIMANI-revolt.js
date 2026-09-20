@@ -1,5 +1,5 @@
 import { backOff } from "@insertish/exponential-backoff";
-import { ObservableSet, runInAction } from "mobx";
+import { ObservableSet, observe, runInAction } from "mobx";
 import WebSocket from "@insertish/isomorphic-ws";
 import type { MessageEvent } from "ws";
 import { Role } from "revolt-api";
@@ -235,6 +235,49 @@ export class WebSocketClient {
                             // on purpose and must stay that way.
                             this.selfUserId = selfUserId;
                             this.selfOnline = selfUser.online === true;
+
+                            // KIMANI diagnostics: pin down where our own dot goes
+                            // grey. Logs what the packet said, what the live
+                            // object holds, and EVERY later change of
+                            // `user.online` with the code path that caused it.
+                            // Cheap (a few lines per launch); remove once the
+                            // presence problem is closed.
+                            try {
+                                const me = this.client.user;
+                                console.info("[Presence] Ready", {
+                                    packetOnline: selfUser.online,
+                                    packetPresence: selfUser.status?.presence,
+                                    objectOnline: me?.online,
+                                    sameObject:
+                                        me === this.client.users.get(selfUserId),
+                                });
+                                if (me) {
+                                    observe(me, "online", (change: any) => {
+                                        console.warn("[Presence] self.online", {
+                                            from: change.oldValue,
+                                            to: change.newValue,
+                                            selfOnlineGuard: this.selfOnline,
+                                            wsReady: this.ready,
+                                            at: new Error().stack
+                                                ?.split("\n")
+                                                .slice(2, 7)
+                                                .map((l) => l.trim().slice(0, 90)),
+                                        });
+                                    });
+                                    [1500, 5000].forEach((ms) =>
+                                        setTimeout(
+                                            () =>
+                                                console.info("[Presence] +" + ms + "ms", {
+                                                    online: me.online,
+                                                    wsReady: this.ready,
+                                                }),
+                                            ms,
+                                        ),
+                                    );
+                                }
+                            } catch (e) {
+                                /* diagnostics must never break Ready */
+                            }
 
                             this.client.emit("ready");
                             this.ready = true;
