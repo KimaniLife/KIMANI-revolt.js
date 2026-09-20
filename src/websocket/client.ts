@@ -983,12 +983,23 @@ export class WebSocketClient {
 
             ws.onclose = () => {
                 this.client.emit("dropped");
-                this.connected = false;
-                this.ready = false;
 
                 Object.keys(timeouts)
                     .map((k) => timeouts[k])
                     .forEach(clearTimeout);
+
+                // KIMANI: a STALE socket's late `onclose` (connect() orphans a
+                // CONNECTING socket, and `disconnect()` only closes an OPEN
+                // one) must not touch shared state. This handler used to run
+                // unconditionally, so after an offline launch → network back →
+                // new socket Ready, the orphan's late close marked EVERY user
+                // (self included) offline again and cleared `ready`/`connected`
+                // for the live socket. Presence then stayed wrong until some
+                // screen re-fetched the roster (e.g. switching tabs).
+                if (this.ws !== ws) return;
+
+                this.connected = false;
+                this.ready = false;
 
                 runInAction(() => {
                     [...this.client.users.values()].forEach(
