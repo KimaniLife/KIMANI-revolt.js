@@ -12,6 +12,7 @@ import type {
     SystemMessageChannels,
 } from "revolt-api";
 import type { File } from "revolt-api";
+import type { User as UserI, Member as MemberI } from "revolt-api";
 
 import { makeAutoObservable, action, runInAction, computed } from "mobx";
 import isEqual from "lodash.isequal";
@@ -25,6 +26,27 @@ import { decodeTime } from "ulid";
 import { INotificationChecker } from "../util/Unreads";
 import { Override } from "revolt-api";
 import { bitwiseAndEq, calculatePermission } from "../permissions/calculator";
+
+/**
+ * Yield to the event loop between chunks. `MessageChannel` instead of
+ * `setTimeout(0)`: timers are clamped to >= 1s in background tabs, which would
+ * turn a chunked apply of a big roster into a very long wait; message events
+ * are not throttled that way.
+ */
+function yieldToEventLoop(): Promise<void> {
+    return new Promise((resolve) => {
+        if (typeof MessageChannel === "undefined") {
+            setTimeout(resolve, 0);
+            return;
+        }
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+            channel.port1.close();
+            resolve();
+        };
+        channel.port2.postMessage(0);
+    });
+}
 
 export class Server {
     client: Client;
@@ -397,31 +419,74 @@ export class Server {
     }
 
     /**
+     * Apply a `/servers/{id}/members` payload to the client collections, in
+     * chunks.
+     *
+     * Building an observable per user + member inside ONE `runInAction` blocks
+     * the main thread for the whole roster (the old comment on `fetchMembers`
+     * measured ~1s on a large server) and shows nothing until it is finished.
+     * Chunks land as separate MobX actions with a yield to the event loop
+     * between them, so the UI stays responsive and lists fill in progressively.
+     *
+     * @param data Payload of the members route (also the cached copy)
+     * @param exclude_offline Skip users that are not online
+     * @param opts.chunkSize Users per chunk (default 250)
+     * @param opts.onProgress Called after every applied chunk
+     * @param opts.shouldContinue Checked before each chunk; return false to stop
+     *   (used when a cached copy must not overwrite fresher data that landed
+     *   while it was still being applied)
+     */
+    async applyMembersData(
+        data: { users: UserI[]; members: MemberI[] },
+        exclude_offline?: boolean,
+        opts: {
+            chunkSize?: number;
+            onProgress?: () => void;
+            shouldContinue?: () => boolean;
+        } = {},
+    ) {
+        const chunk = Math.max(1, opts.chunkSize ?? 250);
+        const total = data.users.length;
+
+        for (let start = 0; start < total; start += chunk) {
+            if (opts.shouldContinue && !opts.shouldContinue()) return;
+            const end = Math.min(start + chunk, total);
+
+            runInAction(() => {
+                for (let i = start; i < end; i++) {
+                    const user = data.users[i];
+                    if (exclude_offline && !user.online) continue;
+                    this.client.users.createObj(user);
+                    this.client.members.createObj(data.members[i]);
+                }
+            });
+
+            opts.onProgress?.();
+            if (end < total) await yieldToEventLoop();
+        }
+    }
+
+    /**
      * Optimised member fetch route.
      * @param exclude_offline
+     * @param opts Chunking / progress options, see `applyMembersData`
+     * @returns The raw payload, so callers can cache it
      */
-    async syncMembers(exclude_offline?: boolean) {
+    async syncMembers(
+        exclude_offline?: boolean,
+        opts?: {
+            chunkSize?: number;
+            onProgress?: () => void;
+            shouldContinue?: () => boolean;
+        },
+    ) {
         const data = await this.client.api.get(
             `/servers/${this._id as ""}/members`,
             { exclude_offline },
         );
 
-        runInAction(() => {
-            if (exclude_offline) {
-                for (let i = 0; i < data.users.length; i++) {
-                    const user = data.users[i];
-                    if (user.online) {
-                        this.client.users.createObj(user);
-                        this.client.members.createObj(data.members[i]);
-                    }
-                }
-            } else {
-                for (let i = 0; i < data.users.length; i++) {
-                    this.client.users.createObj(data.users[i]);
-                    this.client.members.createObj(data.members[i]);
-                }
-            }
-        });
+        await this.applyMembersData(data, exclude_offline, opts);
+        return data;
     }
 
     /**

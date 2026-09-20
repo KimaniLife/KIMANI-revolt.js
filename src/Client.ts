@@ -120,6 +120,68 @@ export declare interface Client {
 export const RE_MENTIONS = /<@([A-z0-9]{26})>/g;
 
 /**
+ * Default ceiling for a single REST request. axios has NO timeout by default,
+ * so a request that the network swallows (captive portal, dead mobile
+ * connection, backend cold-start) hung forever — and anything awaiting it
+ * (session creation, the freshness probe, the serial WS packet queue) hung
+ * with it. A timed-out request rejects with no `response`, which every caller
+ * already classifies as transient (as opposed to a 401/403 auth failure).
+ * Individual calls can still override it via their axios `config` argument.
+ */
+export const REQUEST_TIMEOUT_MS = 20_000;
+
+class TimeoutAPI extends API {
+    get config() {
+        return { timeout: REQUEST_TIMEOUT_MS, ...super.config };
+    }
+}
+
+/** After this age a cached configuration is revalidated in the background. */
+const CONFIG_REVALIDATE_MS = 5 * 60 * 1000;
+/** A persisted configuration older than this is ignored outright. */
+const CONFIG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const configMemory = new Map<string, { value: RevoltConfig; at: number }>();
+const configInflight = new Map<string, Promise<RevoltConfig>>();
+const configStorageKey = (url: string) => `revolt:config:${url}`;
+
+function readCachedConfig(url: string) {
+    const hit = configMemory.get(url);
+    if (hit) return hit;
+
+    try {
+        if (typeof localStorage === "undefined") return undefined;
+        const raw = localStorage.getItem(configStorageKey(url));
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as { value?: RevoltConfig; at?: number };
+        if (
+            !parsed?.value ||
+            typeof parsed.at !== "number" ||
+            Date.now() - parsed.at > CONFIG_MAX_AGE_MS
+        ) {
+            return undefined;
+        }
+        const entry = { value: parsed.value, at: parsed.at };
+        configMemory.set(url, entry);
+        return entry;
+    } catch {
+        return undefined;
+    }
+}
+
+function writeCachedConfig(url: string, value: RevoltConfig) {
+    const entry = { value, at: Date.now() };
+    configMemory.set(url, entry);
+    try {
+        if (typeof localStorage !== "undefined") {
+            localStorage.setItem(configStorageKey(url), JSON.stringify(entry));
+        }
+    } catch {
+        /* quota / private mode — memory copy is enough */
+    }
+}
+
+/**
  * Regular expression for spoilers.
  */
 export const RE_SPOILER = /!!.+!!/g;
@@ -193,7 +255,7 @@ export class Client extends EventEmitter {
             this.unreads = new Unreads(this);
         }
 
-        this.api = new API({ baseURL: this.apiURL });
+        this.api = new TimeoutAPI({ baseURL: this.apiURL });
         this.websocket = new WebSocketClient(this);
         this.heartbeat = this.options.heartbeat;
 
@@ -237,21 +299,68 @@ export class Client extends EventEmitter {
      * configuration if it has already been fetched before.
      */
     async connect() {
-        this.configuration = await this.api.get("/");
+        this.configuration = await this.loadConfiguration();
     }
 
     /**
      * Fetches the configuration of the server if it has not been already fetched.
+     *
+     * @remarks
+     * The configuration (`GET /`) barely ever changes but sits at the very start
+     * of the boot chain, so every session used to pay a full round-trip for it —
+     * twice, because the controller and each session build their own client.
+     * It is now shared per API URL: concurrent callers share one request, a copy
+     * already loaded this run is reused, and a copy persisted by a previous run
+     * is used immediately and revalidated in the background.
      */
     async fetchConfiguration() {
-        if (!this.configuration) await this.connect();
+        if (this.configuration) return;
+
+        const cached = readCachedConfig(this.apiURL);
+        if (cached) {
+            this.configuration = cached.value;
+            if (Date.now() - cached.at > CONFIG_REVALIDATE_MS) {
+                this.loadConfiguration()
+                    .then((fresh) => {
+                        this.configuration = fresh;
+                    })
+                    .catch(() => {
+                        /* keep the cached copy */
+                    });
+            }
+            return;
+        }
+
+        this.configuration = await this.loadConfiguration();
+    }
+
+    /**
+     * Network fetch of the configuration, shared between concurrent callers.
+     */
+    private loadConfiguration(): Promise<RevoltConfig> {
+        const url = this.apiURL;
+        const pending = configInflight.get(url);
+        if (pending) return pending;
+
+        const promise = this.api
+            .get("/")
+            .then((config) => {
+                writeCachedConfig(url, config);
+                return config;
+            })
+            .finally(() => {
+                configInflight.delete(url);
+            });
+
+        configInflight.set(url, promise);
+        return promise;
     }
 
     /**
      * Update API object to use authentication.
      */
     private $updateHeaders() {
-        this.api = new API({
+        this.api = new TimeoutAPI({
             baseURL: this.apiURL,
             authentication: {
                 revolt: this.session,

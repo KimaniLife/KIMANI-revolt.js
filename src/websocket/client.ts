@@ -4,11 +4,39 @@ import WebSocket from "@insertish/isomorphic-ws";
 import type { MessageEvent } from "ws";
 import { Role } from "revolt-api";
 
-import { Client } from "..";
+import { Channel, Client } from "..";
 import {
     ServerboundNotification,
     ClientboundNotification,
 } from "./notifications";
+
+/**
+ * How long the serial packet queue may wait on the lookups a new `Message`
+ * depends on before letting them finish in the background.
+ */
+const MESSAGE_DEPS_WAIT_MS = 2500;
+
+type RaceOutcome<T> = { timedOut: false; value: T } | { timedOut: true };
+
+/**
+ * Resolve with `p`'s value, or `{ timedOut: true }` after `ms` — WITHOUT
+ * cancelling `p`. Rejects if `p` rejects first.
+ */
+function raceTimeout<T>(p: Promise<T>, ms: number): Promise<RaceOutcome<T>> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ timedOut: true }), ms);
+        p.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve({ timedOut: false, value });
+            },
+            (err) => {
+                clearTimeout(timer);
+                reject(err);
+            },
+        );
+    });
+}
 
 export class WebSocketClient {
     client: Client;
@@ -282,94 +310,148 @@ export class WebSocketClient {
 
                         case "Message": {
                             if (!this.client.messages.has(packet._id)) {
-                                if (
-                                    packet.author ===
-                                    "00000000000000000000000000"
-                                ) {
-                                    if (packet.system) {
-                                        switch (packet.system.type) {
-                                            case "user_added":
-                                            case "user_remove":
-                                                await this.client.users.fetch(
-                                                    packet.system.by,
-                                                );
-                                                break;
-                                            case "user_joined":
-                                                await this.client.users.fetch(
-                                                    packet.system.id,
-                                                );
-                                                break;
-                                            case "channel_description_changed":
-                                            case "channel_icon_changed":
-                                            case "channel_renamed":
-                                                await this.client.users.fetch(
-                                                    packet.system.by,
-                                                );
-                                                break;
-                                        }
-                                    }
-                                } else {
-                                    await this.client.users.fetch(
-                                        packet.author,
-                                    );
-                                }
-
-                                const channel =
-                                    await this.client.channels.fetch(
-                                        packet.channel,
-                                    );
-
-                                if (channel.channel_type === "TextChannel") {
-                                    const server =
-                                        await this.client.servers.fetch(
-                                            channel.server_id!,
-                                        );
+                                // Resolve everything the message refers to (author,
+                                // channel, server, author's member record). Each of
+                                // these is a REST round-trip when the entity isn't
+                                // cached yet.
+                                const resolveDeps = async () => {
                                     if (
-                                        packet.author !==
+                                        packet.author ===
                                         "00000000000000000000000000"
-                                    )
-                                        await server.fetchMember(packet.author);
-                                }
-
-                                const message = this.client.messages.createObj(
-                                    packet,
-                                    true,
-                                );
-
-                                runInAction(() => {
-                                    if (
-                                        channel.channel_type === "DirectMessage"
                                     ) {
-                                        channel.active = true;
+                                        if (packet.system) {
+                                            switch (packet.system.type) {
+                                                case "user_added":
+                                                case "user_remove":
+                                                    await this.client.users.fetch(
+                                                        packet.system.by,
+                                                    );
+                                                    break;
+                                                case "user_joined":
+                                                    await this.client.users.fetch(
+                                                        packet.system.id,
+                                                    );
+                                                    break;
+                                                case "channel_description_changed":
+                                                case "channel_icon_changed":
+                                                case "channel_renamed":
+                                                    await this.client.users.fetch(
+                                                        packet.system.by,
+                                                    );
+                                                    break;
+                                            }
+                                        }
+                                    } else {
+                                        await this.client.users.fetch(
+                                            packet.author,
+                                        );
                                     }
 
-                                    channel.last_message_id = message._id;
+                                    const channel =
+                                        await this.client.channels.fetch(
+                                            packet.channel,
+                                        );
 
-                                    if (
-                                        message.author_id ===
-                                        this.client.user!._id
-                                    ) {
-                                        // Own message echo — the author has
-                                        // already seen it; keep the channel
-                                        // acked so our own messages never
-                                        // show an unread mark.
-                                        this.client.unreads?.markRead(
-                                            message.channel_id,
-                                            message._id,
+                                    if (channel.channel_type === "TextChannel") {
+                                        const server =
+                                            await this.client.servers.fetch(
+                                                channel.server_id!,
+                                            );
+                                        if (
+                                            packet.author !==
+                                            "00000000000000000000000000"
+                                        )
+                                            await server.fetchMember(
+                                                packet.author,
+                                            );
+                                    }
+
+                                    return channel;
+                                };
+
+                                const commit = (channel: Channel) => {
+                                    // The slow path can land after a later
+                                    // delivery of the same packet.
+                                    if (this.client.messages.has(packet._id))
+                                        return;
+
+                                    const message =
+                                        this.client.messages.createObj(
+                                            packet,
                                             true,
                                         );
-                                    } else if (
-                                        this.client.unreads &&
-                                        message.mention_ids?.includes(
-                                            this.client.user!._id,
-                                        )
-                                    ) {
-                                        this.client.unreads.markMention(
-                                            message.channel_id,
-                                            message._id,
-                                        );
-                                    }
-                                });
+
+                                    runInAction(() => {
+                                        if (
+                                            channel.channel_type ===
+                                            "DirectMessage"
+                                        ) {
+                                            channel.active = true;
+                                        }
+
+                                        // Ids are ULIDs (lexicographically
+                                        // ordered). A message finished on the
+                                        // slow path must not move the channel
+                                        // pointer back behind a newer one.
+                                        if (
+                                            !channel.last_message_id ||
+                                            message._id > channel.last_message_id
+                                        ) {
+                                            channel.last_message_id =
+                                                message._id;
+                                        }
+
+                                        if (
+                                            message.author_id ===
+                                            this.client.user!._id
+                                        ) {
+                                            // Own message echo — the author has
+                                            // already seen it; keep the channel
+                                            // acked so our own messages never
+                                            // show an unread mark.
+                                            this.client.unreads?.markRead(
+                                                message.channel_id,
+                                                message._id,
+                                                true,
+                                            );
+                                        } else if (
+                                            this.client.unreads &&
+                                            message.mention_ids?.includes(
+                                                this.client.user!._id,
+                                            )
+                                        ) {
+                                            this.client.unreads.markMention(
+                                                message.channel_id,
+                                                message._id,
+                                            );
+                                        }
+                                    });
+                                };
+
+                                // This handler runs inside the serial packet queue
+                                // (see `ws.onmessage`): while it awaits, NO other
+                                // packet — typing, presence, other channels — is
+                                // processed. So wait for the lookups only briefly.
+                                // When everything is cached (the normal case) this
+                                // resolves in microtasks; if a lookup is slow, let
+                                // it finish in the background instead of stalling
+                                // the whole connection behind it.
+                                const pending = resolveDeps();
+                                const outcome = await raceTimeout(
+                                    pending,
+                                    MESSAGE_DEPS_WAIT_MS,
+                                );
+                                if (outcome.timedOut) {
+                                    pending.then(commit).catch((err) =>
+                                        console.warn(
+                                            "[Revolt.js WS] deferred message failed",
+                                            packet._id,
+                                            err,
+                                        ),
+                                    );
+                                } else {
+                                    commit(outcome.value);
+                                }
                             }
                             break;
                         }
