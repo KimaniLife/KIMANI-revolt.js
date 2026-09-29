@@ -578,17 +578,30 @@ export default class Servers extends Collection<string, Server> {
 
         return runInAction(async () => {
             if (channels) {
+                // Data is supplied inline (no network per channel), so a plain
+                // pass is fine here.
                 for (const channel of channels) {
                     await this.client.channels.fetch(channel._id, channel);
                 }
             } else {
-                for (const channel of res.channels) {
-                    // ! FIXME: add route for fetching all channels
-                    // ! FIXME: OR the WHOLE server
-                    try {
-                        await this.client.channels.fetch(channel);
-                        // future proofing for when not
-                    } catch (err) {}
+                // ! FIXME: add route for fetching all channels OR the WHOLE server.
+                // Until then: a server can hold hundreds of channels (Kimani's
+                // default has ~458), and fetching them one-at-a-time serially made
+                // a stalled-Ready REST fallback take minutes on a real link. Fetch
+                // in bounded-concurrency batches — parallel enough to be fast,
+                // capped so we don't trip the API ratelimiter with 458 at once.
+                const ids = res.channels as string[];
+                const CONCURRENCY = 8;
+                for (let i = 0; i < ids.length; i += CONCURRENCY) {
+                    await Promise.all(
+                        ids
+                            .slice(i, i + CONCURRENCY)
+                            .map((channel) =>
+                                this.client.channels
+                                    .fetch(channel)
+                                    .catch(() => {}),
+                            ),
+                    );
                 }
             }
 
