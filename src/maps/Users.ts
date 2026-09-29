@@ -1,7 +1,7 @@
 import type {
     BotInformation,
     UserStatus,
-    User as UserI,
+    User as ApiUser,
     RelationshipStatus,
     FieldsUser,
     DataEditUser,
@@ -18,6 +18,8 @@ import { Client, FileArgs } from "..";
 import _ from "lodash";
 import { decodeTime } from "ulid";
 
+type UserI = ApiUser & { relationship_note?: string | null };
+
 export class User {
     client: Client;
 
@@ -28,6 +30,8 @@ export class User {
     badges: Nullable<number>;
     status: Nullable<UserStatus>;
     relationship: Nullable<RelationshipStatus>;
+    /** Optional note visible only to the Incoming recipient. */
+    relationship_note: Nullable<string>;
     online: boolean;
     privileged: boolean;
     flags: Nullable<number>;
@@ -50,6 +54,9 @@ export class User {
         this.badges = toNullable(data.badges);
         this.status = toNullable(data.status);
         this.relationship = toNullable(data.relationship);
+        this.relationship_note = toNullable(
+            data.relationship_note,
+        );
         this.online = data.online ?? false;
         this.privileged = data.privileged ?? false;
         this.flags = toNullable(data.flags);
@@ -96,6 +103,15 @@ export class User {
         apply("avatar");
         apply("badges");
         apply("status");
+        // Note must land before relationship: the "relationship" apply below
+        // fires the `user/relationship` event synchronously, and listeners
+        // (e.g. the pending-requests list) read `relationship_note` off this
+        // same object when they re-render in response to it.
+        if (typeof data.relationship !== "undefined" &&
+            (data.relationship !== "Incoming" || typeof data.relationship_note === "undefined")) {
+            this.relationship_note = null;
+        }
+        apply("relationship_note");
         apply("relationship");
         apply("online");
         apply("privileged");
@@ -128,11 +144,11 @@ export class User {
 
     /**
      * Send a friend request to a user
+     * @param note Optional note shown to the recipient alongside the request
      */
-    async addFriend() {
-        return await this.client.api.post(`/users/friend`, {
-            username: this._id,
-        });
+    async addFriend(note?: string) {
+        const request: { username: string; note?: string } = { username: this._id, note };
+        return await this.client.api.post(`/users/friend`, request);
     }
 
     /**
