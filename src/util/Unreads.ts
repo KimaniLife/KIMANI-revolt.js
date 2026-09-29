@@ -34,6 +34,15 @@ export default class Unreads {
     }
 
     /**
+     * Whether the server's unread state has been synced at least once.
+     * Until then `getUnread` answers with a placeholder, so anything that
+     * needs the real read position (unread marker, acks) must wait on this.
+     */
+    get isLoaded() {
+        return this.loaded;
+    }
+
+    /**
      * Sync unread data from the server.
      */
     async sync() {
