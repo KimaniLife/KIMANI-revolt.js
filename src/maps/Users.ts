@@ -107,8 +107,11 @@ export class User {
         // fires the `user/relationship` event synchronously, and listeners
         // (e.g. the pending-requests list) read `relationship_note` off this
         // same object when they re-render in response to it.
+        // Only a move away from Incoming drops the note. An Incoming update
+        // without one is a local rollback (e.g. a failed accept) and must keep
+        // it; a genuinely new request always passes through None/Outgoing first.
         if (typeof data.relationship !== "undefined" &&
-            (data.relationship !== "Incoming" || typeof data.relationship_note === "undefined")) {
+            data.relationship !== "Incoming") {
             this.relationship_note = null;
         }
         apply("relationship_note");
