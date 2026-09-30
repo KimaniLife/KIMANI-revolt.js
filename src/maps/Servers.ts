@@ -446,7 +446,14 @@ export class Server {
         } = {},
     ) {
         const chunk = Math.max(1, opts.chunkSize ?? 250);
-        const total = data.users.length;
+        // The two lists do NOT pair up by position: the server skips user
+        // documents it cannot read and member rows can outlive their user, so
+        // `users` may be shorter. Walking `users` by index dropped the tail of
+        // `members` — sorted by (time-ordered) user id, i.e. the NEWEST members,
+        // who then vanished from "New members". Pair by id instead.
+        const usersById = new Map<string, UserI>();
+        for (const user of data.users) usersById.set(user._id, user);
+        const total = data.members.length;
 
         for (let start = 0; start < total; start += chunk) {
             if (opts.shouldContinue && !opts.shouldContinue()) return;
@@ -454,10 +461,11 @@ export class Server {
 
             runInAction(() => {
                 for (let i = start; i < end; i++) {
-                    const user = data.users[i];
-                    if (exclude_offline && !user.online) continue;
-                    this.client.users.createObj(user);
-                    this.client.members.createObj(data.members[i]);
+                    const member = data.members[i];
+                    const user = usersById.get(member._id.user);
+                    if (exclude_offline && !user?.online) continue;
+                    if (user) this.client.users.createObj(user);
+                    this.client.members.createObj(member);
                 }
             });
 
