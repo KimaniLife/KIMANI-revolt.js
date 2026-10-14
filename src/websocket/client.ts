@@ -455,17 +455,12 @@ export class WebSocketClient {
                                             channel.active = true;
                                         }
 
-                                        // Ids are ULIDs (lexicographically
-                                        // ordered). A message finished on the
-                                        // slow path must not move the channel
-                                        // pointer back behind a newer one.
-                                        if (
-                                            !channel.last_message_id ||
-                                            message._id > channel.last_message_id
-                                        ) {
-                                            channel.last_message_id =
-                                                message._id;
-                                        }
+                                        // A message finished on the slow path
+                                        // must not move the channel pointer
+                                        // back behind a newer one.
+                                        channel.advanceLastMessageId(
+                                            message._id,
+                                        );
 
                                         if (
                                             message.author_id ===

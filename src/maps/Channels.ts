@@ -415,6 +415,23 @@ export class Channel {
         apply("hide_title");
     }
 
+    /**
+     * Move `last_message_id` forward to `id` if it is newer; never back.
+     *
+     * The socket is not the only way to learn about new messages: messages
+     * sent while it was down (app in the background, reconnect) are never
+     * replayed, and a Ready does not refresh channels already in the map.
+     * The open channel view acks `last_message_id`, so a stale pointer made
+     * a DM the member had just read look read locally while the server kept
+     * it unread — the dot came back on the next start until a second visit.
+     * Ids are ULIDs, so string order is time order.
+     */
+    @action advanceLastMessageId(id?: string | null) {
+        if (id && (!this.last_message_id || id > this.last_message_id)) {
+            this.last_message_id = id;
+        }
+    }
+
     @action updateGroupJoin(user: string) {
         this.recipient_ids?.push(user);
     }
@@ -564,7 +581,11 @@ export class Channel {
             `/channels/${this._id as ""}/messages`,
             { ...params },
         )) as MessageI[];
-        return runInAction(() => messages.map(this.client.messages.createObj));
+        return runInAction(() => {
+            for (const message of messages)
+                this.advanceLastMessageId(message._id);
+            return messages.map(this.client.messages.createObj);
+        });
     }
 
     /**
@@ -586,6 +607,10 @@ export class Channel {
             { ...params, include_users: true },
         )) as { messages: MessageI[]; users: APIUser[]; members?: Member[] };
         return runInAction(() => {
+            // Messages the member is about to see may be newer than what the
+            // socket delivered (it was down, e.g. resumed from background).
+            for (const message of data.messages)
+                this.advanceLastMessageId(message._id);
             return {
                 messages: data.messages.map(this.client.messages.createObj),
                 users: data.users.map(this.client.users.createObj),
