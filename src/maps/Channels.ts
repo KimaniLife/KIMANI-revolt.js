@@ -733,7 +733,12 @@ export class Channel {
             ulid();
         const performAck = () => {
             delete this.ackLimit;
-            this.client.api.put(`/channels/${this._id}/ack/${id as ""}`);
+            // Fired from a timer, so no caller can catch it. Best effort: a
+            // failed ack (offline, timeout) only leaves the channel unread
+            // until the next ack or unreads sync.
+            this.client.api
+                .put(`/channels/${this._id}/ack/${id as ""}`)
+                .catch(() => undefined);
         };
 
         if (!this.client.options.ackRateLimiter || skipRateLimiter)

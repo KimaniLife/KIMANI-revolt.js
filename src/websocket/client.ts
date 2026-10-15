@@ -38,6 +38,17 @@ function raceTimeout<T>(p: Promise<T>, ms: number): Promise<RaceOutcome<T>> {
     });
 }
 
+/**
+ * Packet handlers that resolve entities in a detached `runInAction(async …)`
+ * sit outside `process`' try/catch, so a REST failure there (offline, timeout,
+ * 404 for a server or user that no longer exists) became an unhandled
+ * rejection. Log it like `process` does instead.
+ */
+function logDetachedFailure(packetType: string) {
+    return (err: unknown) =>
+        console.warn(`[Revolt.js WS] ${packetType} handler failed`, err);
+}
+
 export class WebSocketClient {
     client: Client;
     ws?: WebSocket;
@@ -655,7 +666,7 @@ export class WebSocketClient {
                                 }
 
                                 this.client.channels.createObj(packet, true);
-                            });
+                            }).catch(logDetachedFailure("ChannelCreate"));
                             break;
                         }
 
@@ -716,7 +727,7 @@ export class WebSocketClient {
                                     packet.id,
                                     packet.server,
                                 );
-                            });
+                            }).catch(logDetachedFailure("ServerCreate"));
 
                             break;
                         }
@@ -767,7 +778,7 @@ export class WebSocketClient {
                                     },
                                     true,
                                 );
-                            });
+                            }).catch(logDetachedFailure("ServerMemberJoin"));
 
                             break;
                         }
