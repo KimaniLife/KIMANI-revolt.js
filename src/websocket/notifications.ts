@@ -21,8 +21,7 @@ type WebSocketError = {
 export type ServerboundNotification =
     | { type: "Ping"; data: number }
     | { type: "Pong"; data: number }
-    | ({ type: "Authenticate" } & Session)
-    | { type: "Authenticate"; token: string }
+    | ({ type: "Authenticate"; auth0_token?: string } & Session)
     | { type: "BeginTyping"; channel: string }
     | { type: "EndTyping"; channel: string };
 

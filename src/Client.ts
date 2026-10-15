@@ -53,6 +53,9 @@ export interface ClientOptions {
     onPongTimeout?: "EXIT" | "RECONNECT";
 
     ackRateLimiter: boolean;
+
+    /** Optional cached Auth0 proof. No network or login side effects during chat bootstrap. */
+    getAuth0Token?: () => string | undefined;
 }
 
 export declare interface Client {
@@ -131,8 +134,29 @@ export const RE_MENTIONS = /<@([A-z0-9]{26})>/g;
 export const REQUEST_TIMEOUT_MS = 20_000;
 
 class TimeoutAPI extends API {
+    constructor(
+        options: ConstructorParameters<typeof API>[0],
+        private readonly readProof?: () => string | undefined,
+    ) {
+        super(options);
+    }
+
     get config() {
-        return { timeout: REQUEST_TIMEOUT_MS, ...super.config };
+        const config = super.config;
+        let token: string | undefined;
+        try {
+            token = this.readProof?.();
+        } catch {
+            // Optional authority must not block normal chat.
+        }
+        return {
+            timeout: REQUEST_TIMEOUT_MS,
+            ...config,
+            headers: {
+                ...config.headers,
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+        };
     }
 }
 
@@ -375,7 +399,7 @@ export class Client extends EventEmitter {
             authentication: {
                 revolt: this.session,
             },
-        });
+        }, () => this.options.getAuth0Token?.());
     }
 
     /**

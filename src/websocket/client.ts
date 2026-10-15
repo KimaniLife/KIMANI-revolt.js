@@ -99,7 +99,12 @@ export class WebSocketClient {
             return;
 
         const data = JSON.stringify(notification);
-        if (this.client.debug) console.debug("[<] PACKET", data);
+        if (this.client.debug) {
+            console.debug("[<] PACKET",
+                notification.type === "Authenticate"
+                    ? "[Authenticate: credentials redacted]"
+                    : data);
+        }
         this.ws.send(data);
     }
 
@@ -137,15 +142,23 @@ export class WebSocketClient {
             this.ws = ws;
 
             ws.onopen = () => {
+                let auth0_token: string | undefined;
+                try {
+                    auth0_token = this.client.options.getAuth0Token?.();
+                } catch {
+                    // Ordinary session remains usable.
+                }
                 if (typeof this.client.session === "string") {
                     this.send({
                         type: "Authenticate",
                         token: this.client.session!,
+                        auth0_token,
                     });
                 } else {
                     this.send({
                         type: "Authenticate",
                         ...this.client.session!,
+                        auth0_token,
                     });
                 }
             };
