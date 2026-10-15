@@ -295,6 +295,17 @@ export class Channel {
         )
             return false;
 
+        // A conversation whose latest message is ours is read: the server
+        // never acks the author, and pointers also move forward from fetches
+        // and Ready (not just the socket echo that acks our own sends), so
+        // without this a reply could leave a badge nothing would clear.
+        const self = this.client.user?._id;
+        if (
+            self &&
+            this.client.messages?.get(this.last_message_id)?.author_id === self
+        )
+            return false;
+
         return (
             (
                 this.client.unreads?.getUnread(this._id)?.last_id ?? "0"
@@ -410,7 +421,10 @@ export class Channel {
         apply("banner");
         apply("description");
         apply("recipients", "recipient_ids");
-        apply("last_message_id");
+        // Forward only: the server writes a channel's `last_message_id`
+        // through a debounced task, so a snapshot (Ready, channel fetch) can
+        // carry an older id than a message the socket already delivered.
+        this.advanceLastMessageId(data.last_message_id);
         apply("nsfw");
         apply("hide_title");
     }
@@ -547,7 +561,11 @@ export class Channel {
             },
         );
 
-        return this.client.messages.createObj(message, true);
+        const sent = this.client.messages.createObj(message, true);
+        // The socket echo is dropped once this response stored the message,
+        // so the channel pointer moves here.
+        this.advanceLastMessageId(sent._id);
+        return sent;
     }
 
     /**
@@ -853,7 +871,12 @@ export default class Channels extends Collection<string, any> {
      * @returns Channel
      */
     createObj(data: any, emit?: boolean | number) {
-        if (this.has(data._id)) return this.$get(data._id);
+        // Refresh a channel we already hold, like users and servers do: a
+        // reconnect's Ready (or a Ready after the cached boot snapshot) is
+        // the only place messages sent while the socket was down show up in
+        // `last_message_id`. Ignoring it left those DMs looking read — no
+        // badge, no dot — until the chat itself was opened and fetched.
+        if (this.has(data._id)) return this.$get(data._id, data);
         const channel = new Channel(this.client, data);
 
         runInAction(() => {
