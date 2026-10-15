@@ -1,0 +1,173 @@
+--- a/src/Client.ts
++++ b/src/Client.ts
+@@ -53,6 +53,9 @@
+     onPongTimeout?: "EXIT" | "RECONNECT";
+ 
+     ackRateLimiter: boolean;
++
++    /** Optional cached Auth0 proof. No network or login side effects during chat bootstrap. */
++    getAuth0Token?: () => string | undefined;
+ }
+ 
+ export declare interface Client {
+@@ -131,8 +134,29 @@
+ export const REQUEST_TIMEOUT_MS = 20_000;
+ 
+ class TimeoutAPI extends API {
++    constructor(
++        options: ConstructorParameters<typeof API>[0],
++        private readonly readProof?: () => string | undefined,
++    ) {
++        super(options);
++    }
++
+     get config() {
+-        return { timeout: REQUEST_TIMEOUT_MS, ...super.config };
++        const config = super.config;
++        let token: string | undefined;
++        try {
++            token = this.readProof?.();
++        } catch {
++            // Optional authority must not block normal chat.
++        }
++        return {
++            timeout: REQUEST_TIMEOUT_MS,
++            ...config,
++            headers: {
++                ...config.headers,
++                ...(token ? { Authorization: `Bearer ${token}` } : {}),
++            },
++        };
+     }
+ }
+ 
+@@ -375,7 +399,7 @@
+             authentication: {
+                 revolt: this.session,
+             },
+-        });
++        }, () => this.options.getAuth0Token?.());
+     }
+ 
+     /**
+--- a/src/websocket/client.ts
++++ b/src/websocket/client.ts
+@@ -99,7 +99,12 @@
+             return;
+ 
+         const data = JSON.stringify(notification);
+-        if (this.client.debug) console.debug("[<] PACKET", data);
++        if (this.client.debug) {
++            console.debug("[<] PACKET",
++                notification.type === "Authenticate"
++                    ? "[Authenticate: credentials redacted]"
++                    : data);
++        }
+         this.ws.send(data);
+     }
+ 
+@@ -137,15 +142,23 @@
+             this.ws = ws;
+ 
+             ws.onopen = () => {
++                let auth0_token: string | undefined;
++                try {
++                    auth0_token = this.client.options.getAuth0Token?.();
++                } catch {
++                    // Ordinary session remains usable.
++                }
+                 if (typeof this.client.session === "string") {
+                     this.send({
+                         type: "Authenticate",
+                         token: this.client.session!,
++                        auth0_token,
+                     });
+                 } else {
+                     this.send({
+                         type: "Authenticate",
+                         ...this.client.session!,
++                        auth0_token,
+                     });
+                 }
+             };
+--- a/src/websocket/notifications.ts
++++ b/src/websocket/notifications.ts
+@@ -21,8 +21,7 @@
+ export type ServerboundNotification =
+     | { type: "Ping"; data: number }
+     | { type: "Pong"; data: number }
+-    | ({ type: "Authenticate" } & Session)
+-    | { type: "Authenticate"; token: string }
++    | ({ type: "Authenticate"; auth0_token?: string } & Session)
+     | { type: "BeginTyping"; channel: string }
+     | { type: "EndTyping"; channel: string };
+ 
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+import json
+import subprocess
+
+base = Path('/home/leo/Desktop/Tuki')
+installer = base / 'aplicar-roles-auth0.mjs'
+frontend = base / 'KIMANI-Frontend-v2'
+
+current_hash = 'c40da16121c96ca532a3c4026a00c2a65cb0f2c13a6c2a86f6fc42a46a85ec87'
+patched_hash = '9834ea208271d4012929aa76570a00e0a4e7ca7c61203977d4cdd568595aee2f'
+sha = lambda data: hashlib.sha256(data).hexdigest()
+
+source = installer.read_text()
+start = source.index('const sources = ') + len('const sources = ')
+sources, length = json.JSONDecoder().raw_decode(source[start:])
+record = next(
+    item for item in sources['sdk']
+    if item['path'] == 'src/websocket/client.ts'
+)
+
+actual = frontend / 'external/revolt.js/src/websocket/client.ts'
+if sha(actual.read_bytes()) not in (current_hash, patched_hash):
+    raise SystemExit('El archivo ha vuelto a cambiar. No se modifico nada.')
+
+if record['before'] != current_hash:
+    if record['before'] != '5fdf17b00ffe01e6ab94fd02a92c3717bcea511024dd4d6ce618f8f3672cca94':
+        raise SystemExit('Instalador no reconocido. No se modifico nada.')
+
+    content = record['content']
+    first = content.index('                                        // Ids are ULIDs')
+    last = content.index(
+        '\n                                        if (',
+        content.index('                                            message._id;\n', first),
+    )
+    replacement = '\n'.join([
+        '                                        // A message finished on the slow path',
+        '                                        // must not move the channel pointer',
+        '                                        // back behind a newer one.',
+        '                                        channel.advanceLastMessageId(',
+        '                                            message._id,',
+        '                                        );',
+        '',
+    ])
+    content = content[:first] + replacement + content[last:]
+
+    if sha(content.encode()) != patched_hash:
+        raise SystemExit('La adaptacion no coincide. No se modifico nada.')
+
+    record.update(before=current_hash, after=patched_hash, content=content)
+    installer.write_text(
+        source[:start]
+        + json.dumps(sources, ensure_ascii=False, indent=2)
+        + source[start + length:]
+    )
+    print('Instalador adaptado. Repositorios sin modificar.')
+else:
+    print('El instalador ya estaba adaptado.')
+
+for repo, root in [
+    ('sdk', frontend / 'external/revolt.js'),
+    ('frontend', frontend),
+]:
+    subprocess.run([
+        'node', str(installer),
+        '--repo', repo, '--root', str(root), '--check',
+    ], check=True)
+PY
