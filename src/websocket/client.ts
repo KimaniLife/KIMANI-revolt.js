@@ -86,9 +86,17 @@ export class WebSocketClient {
      */
     disconnect() {
         clearInterval(this.heartbeat);
+        const wasLive = this.connected;
         this.connected = false;
         this.ready = false;
         this.selfOnline = false;
+        // A reconnect (pong timeout) replaces `this.ws` before the old
+        // socket's `onclose` runs, so that handler bails out as stale and its
+        // sweep never happened: presence from the dead connection carried over
+        // and `Users.createObjFromRest` then trusted it as live. Only a live
+        // connection is swept: `connect()` calls this on every attempt, and a
+        // cold boot must keep the presence painted from cache until Ready.
+        if (wasLive) this.markAllOffline();
 
         if (
             typeof this.ws !== "undefined" &&
@@ -96,6 +104,21 @@ export class WebSocketClient {
         ) {
             this.ws.close();
         }
+    }
+
+    /**
+     * Presence and typing belong to a connection: once it is gone nobody is
+     * known to be online until the next one says so.
+     */
+    private markAllOffline() {
+        runInAction(() => {
+            [...this.client.users.values()].forEach(
+                (user) => (user.online = false),
+            );
+            [...this.client.channels.values()].forEach((channel) =>
+                channel.typing_ids.clear(),
+            );
+        });
     }
 
     /**
@@ -1087,14 +1110,7 @@ export class WebSocketClient {
                 this.ready = false;
                 this.selfOnline = false;
 
-                runInAction(() => {
-                    [...this.client.users.values()].forEach(
-                        (user) => (user.online = false),
-                    );
-                    [...this.client.channels.values()].forEach((channel) =>
-                        channel.typing_ids.clear(),
-                    );
-                });
+                this.markAllOffline();
 
                 if (!disallowReconnect && this.client.autoReconnect) {
                     backOff(() => this.connect(true)).catch(reject);
