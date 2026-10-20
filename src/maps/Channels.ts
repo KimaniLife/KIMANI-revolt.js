@@ -474,7 +474,7 @@ export class Channel {
             `/channels/${this._id as ""}/members`,
         );
 
-        return members.map(this.client.users.createObj);
+        return members.map(this.client.users.createObjFromRest);
     }
 
     /**
@@ -631,7 +631,7 @@ export class Channel {
                 this.advanceLastMessageId(message._id);
             return {
                 messages: data.messages.map(this.client.messages.createObj),
-                users: data.users.map(this.client.users.createObj),
+                users: data.users.map(this.client.users.createObjFromRest),
                 members: data.members?.map(this.client.members.createObj),
             };
         });
@@ -663,7 +663,7 @@ export class Channel {
         return runInAction(() => {
             return {
                 messages: data.messages.map(this.client.messages.createObj),
-                users: data.users.map(this.client.users.createObj),
+                users: data.users.map(this.client.users.createObjFromRest),
                 members: data.members?.map(this.client.members.createObj),
             };
         });

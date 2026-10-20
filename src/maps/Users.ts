@@ -95,6 +95,15 @@ export class User {
                     if (this.status) {
                         this.status.text = undefined;
                     }
+                    break;
+                }
+                // Leaving Invisible clears the presence; ignoring it kept the
+                // member "Invisible" (shown offline) while they were online.
+                case "StatusPresence": {
+                    if (this.status) {
+                        this.status.presence = undefined;
+                    }
+                    break;
                 }
             }
         }
@@ -274,6 +283,7 @@ export default class Users extends Collection<string, User> {
     constructor(client: Client) {
         super(client);
         this.createObj = this.createObj.bind(this);
+        this.createObjFromRest = this.createObjFromRest.bind(this);
         this.set(
             "00000000000000000000000000",
             new User(client, {
@@ -317,6 +327,25 @@ export default class Users extends Collection<string, User> {
 
         this.client.emit("user/relationship", user);
         return user;
+    }
+
+    /**
+     * Create or update a user from a REST payload (rosters, messages with
+     * users). Its `online` was computed when the server built the response, so
+     * while our socket is live an `online: false` in it can be older than the
+     * `UserUpdate { online: true }` the socket already delivered: a roster in
+     * flight (or applied in chunks) used to grey out a member who had just come
+     * online until their next presence change (Oct 2026). A real disconnect
+     * still arrives as a socket `UserUpdate`, and a socket close marks everyone
+     * offline first, so any live `true` dates from the current connection.
+     * @param data User data from a REST response
+     * @returns User
+     */
+    createObjFromRest(data: UserI) {
+        const live = this.get(data._id);
+        const stale =
+            data.online === false && live?.online && this.client.websocket?.ready;
+        return this.createObj(stale ? { ...data, online: true } : data);
     }
 
     /**

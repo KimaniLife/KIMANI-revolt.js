@@ -464,7 +464,7 @@ export class Server {
                     const member = data.members[i];
                     const user = usersById.get(member._id.user);
                     if (exclude_offline && !user?.online) continue;
-                    if (user) this.client.users.createObj(user);
+                    if (user) this.client.users.createObjFromRest(user);
                     this.client.members.createObj(member);
                 }
             });
@@ -510,7 +510,7 @@ export class Server {
         return runInAction(() => {
             return {
                 members: data.members.map(this.client.members.createObj),
-                users: data.users.map(this.client.users.createObj),
+                users: data.users.map(this.client.users.createObjFromRest),
             };
         });
     }
