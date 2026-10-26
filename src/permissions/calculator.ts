@@ -29,7 +29,8 @@ interface CalculateOptions {
  * Calculate permissions against a given object
  *
  * Mirrors the server's Kimani rules: a DM opened by staff (`staff_id`) lets
- * both sides write, even a restricted member; anywhere else a restricted
+ * the member write, even when restricted, unless either side blocked the
+ * other; anywhere else a restricted
  * member (`UserFlags.Restricted`) keeps at most view and read-history.
  * @param target Target object to check permissions against
  * @param options Additional options to use when calculating
@@ -48,7 +49,15 @@ export function calculatePermission(
         target.channel_type === "DirectMessage" &&
         target.staff_id
     ) {
-        return DEFAULT_PERMISSION_DIRECT_MESSAGE;
+        // Same rule as the server: a block on either side wins; the staff
+        // side, no longer privileged, falls back to the plain DM rules.
+        const relationship = target.recipient?.relationship;
+        if (relationship === "Blocked" || relationship === "BlockedOther") {
+            return DEFAULT_PERMISSION_VIEW_ONLY;
+        }
+        if (user?._id !== target.staff_id) {
+            return DEFAULT_PERMISSION_DIRECT_MESSAGE;
+        }
     }
 
     const permission = basePermission(target, user, options);
