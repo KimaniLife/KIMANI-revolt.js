@@ -1,5 +1,5 @@
 import Long from "long";
-import { Channel, Server, Member } from "..";
+import { Channel, Server, Member, User } from "..";
 import {
     ALLOW_IN_TIMEOUT,
     DEFAULT_PERMISSION_DIRECT_MESSAGE,
@@ -18,25 +18,57 @@ export function bitwiseAndEq(a: number, ...b: number[]) {
     return value.and(a).eq(value);
 }
 
+interface CalculateOptions {
+    /**
+     * Pretend to be another member
+     */
+    member?: Member;
+}
+
 /**
  * Calculate permissions against a given object
+ *
+ * Mirrors the server's Kimani rules: a DM opened by staff (`staff_id`) lets
+ * both sides write, even a restricted member; anywhere else a restricted
+ * member (`UserFlags.Restricted`) keeps at most view and read-history.
  * @param target Target object to check permissions against
  * @param options Additional options to use when calculating
  */
 export function calculatePermission(
     target: Channel | Server,
-    options?: {
-        /**
-         * Pretend to be another member
-         */
-        member?: Member;
-    },
+    options?: CalculateOptions,
 ): number {
     const user = options?.member ? options?.member.user : target.client.user;
     if (user?.privileged) {
         return Permission.GrantAllSafe;
     }
 
+    if (
+        target instanceof Channel &&
+        target.channel_type === "DirectMessage" &&
+        target.staff_id
+    ) {
+        return DEFAULT_PERMISSION_DIRECT_MESSAGE;
+    }
+
+    const permission = basePermission(target, user, options);
+    if (
+        user?.restricted &&
+        !(target instanceof Channel && target.channel_type === "SavedMessages")
+    ) {
+        return Long.fromNumber(permission)
+            .and(DEFAULT_PERMISSION_VIEW_ONLY)
+            .toNumber();
+    }
+    return permission;
+}
+
+/** Upstream Revolt permission rules, before the Kimani overrides above. */
+function basePermission(
+    target: Channel | Server,
+    user: User | null | undefined,
+    options?: CalculateOptions,
+): number {
     if (target instanceof Server) {
         // 1. Check if owner.
         if (target.owner === user?._id) {

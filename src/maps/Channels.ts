@@ -42,6 +42,14 @@ export class Channel {
     active: Nullable<boolean> = null;
 
     /**
+     * Id of the privileged (staff) user who opened this DM without a
+     * friendship. Both sides may message in it, including a restricted
+     * member, so the app can reach anyone and mark the DM as "Admin".
+     * @requires `DirectMessage`
+     */
+    staff_id: Nullable<string> = null;
+
+    /**
      * The ID of the group owner.
      * @requires `Group`
      */
@@ -334,6 +342,7 @@ export class Channel {
         switch (data.channel_type) {
             case "DirectMessage": {
                 this.active = toNullable(data.active);
+                this.staff_id = toNullable(data.staff_id);
                 this.recipient_ids = toNullable(data.recipients);
                 this.last_message_id = toNullable(data.last_message_id);
                 break;
@@ -412,6 +421,7 @@ export class Channel {
         }
 
         apply("active");
+        apply("staff_id");
         apply("owner", "owner_id");
         apply("permissions");
         apply("default_permissions");

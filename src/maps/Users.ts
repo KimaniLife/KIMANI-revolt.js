@@ -11,7 +11,7 @@ import type { File } from "revolt-api";
 import { makeAutoObservable, action, runInAction, computed } from "mobx";
 import isEqual from "lodash.isequal";
 
-import { U32_MAX, UserPermission } from "../permissions/definitions";
+import { U32_MAX, UserFlags, UserPermission } from "../permissions/definitions";
 import { toNullable, Nullable } from "../util/null";
 import Collection from "./Collection";
 import { Client, FileArgs } from "..";
@@ -232,6 +232,14 @@ export class User {
     /**
      * Get a pre-configured animated avatar URL of a user
      */
+    /**
+     * Frozen by an admin (`UserFlags.Restricted`): the member keeps their
+     * login and profile but may only write in staff DMs.
+     */
+    get restricted() {
+        return ((this.flags ?? 0) & UserFlags.Restricted) !== 0;
+    }
+
     get animatedAvatarURL() {
         return this.generateAvatarURL({ max_side: 256 }, true);
     }
@@ -244,6 +252,10 @@ export class User {
     }
 
     @computed get permission() {
+        // A privileged viewer (Auth0 `revolt:privileged`) may reach any
+        // member without a friendship; the server allows the same.
+        if (this.client.user?.privileged) return U32_MAX;
+
         let permissions = 0;
         switch (this.relationship) {
             case "Friend":
