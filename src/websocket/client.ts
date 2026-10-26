@@ -403,6 +403,24 @@ export class WebSocketClient {
                                 await yieldToEventLoop();
                             }
 
+                            // The server leaves a hidden (restricted) peer out of
+                            // Ready while still listing their DM: with every user
+                            // now hydrated, a DM peer still missing is known
+                            // unavailable, not merely loading.
+                            runInAction(() => {
+                                for (const channel of packet.channels) {
+                                    if (channel.channel_type !== "DirectMessage")
+                                        continue;
+                                    for (const id of channel.recipients) {
+                                        if (
+                                            id !== selfUserId &&
+                                            !this.client.users.has(id)
+                                        )
+                                            this.client.users.unavailable.add(id);
+                                    }
+                                }
+                            });
+
                             const emojis = packet.emojis ?? [];
                             for (let i = 0; i < emojis.length; i += HYDRATE_CHUNK) {
                                 const slice = emojis.slice(i, i + HYDRATE_CHUNK);

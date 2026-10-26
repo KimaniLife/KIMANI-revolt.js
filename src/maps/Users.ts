@@ -8,7 +8,13 @@ import type {
 } from "revolt-api";
 import type { File } from "revolt-api";
 
-import { makeAutoObservable, action, runInAction, computed } from "mobx";
+import {
+    makeAutoObservable,
+    action,
+    runInAction,
+    computed,
+    observable,
+} from "mobx";
 import isEqual from "lodash.isequal";
 
 import { U32_MAX, UserFlags, UserPermission } from "../permissions/definitions";
@@ -292,6 +298,14 @@ export class User {
 }
 
 export default class Users extends Collection<string, User> {
+    /**
+     * Ids this account is known not to see: `GET /users/:id` answered 404
+     * (the server hides a restricted member from non-staff), or a DM peer the
+     * Ready snapshot left out. Lets the app say "unavailable" only when that
+     * is known, instead of while users are still loading.
+     */
+    readonly unavailable = observable.set<string>();
+
     constructor(client: Client) {
         super(client);
         this.createObj = this.createObj.bind(this);
@@ -318,9 +332,16 @@ export default class Users extends Collection<string, User> {
      */
     async fetch(id: string, data?: UserI) {
         if (this.has(id)) return this.$get(id, data);
-        const res = data ?? (await this.client.api.get(`/users/${id as ""}`));
+        if (data) return this.createObj(data);
 
-        return this.createObj(res);
+        try {
+            return this.createObj(await this.client.api.get(`/users/${id as ""}`));
+        } catch (err) {
+            if ((err as { response?: { status?: number } })?.response?.status === 404) {
+                runInAction(() => this.unavailable.add(id));
+            }
+            throw err;
+        }
     }
 
     /**
@@ -335,6 +356,7 @@ export default class Users extends Collection<string, User> {
 
         runInAction(() => {
             this.set(data._id, user);
+            this.unavailable.delete(data._id);
         });
 
         this.client.emit("user/relationship", user);
