@@ -236,9 +236,6 @@ export class User {
     }
 
     /**
-     * Get a pre-configured animated avatar URL of a user
-     */
-    /**
      * Frozen by an admin (`UserFlags.Restricted`): the member keeps their
      * login and profile but may only write in staff DMs.
      */
@@ -246,6 +243,9 @@ export class User {
         return ((this.flags ?? 0) & UserFlags.Restricted) !== 0;
     }
 
+    /**
+     * Get a pre-configured animated avatar URL of a user
+     */
     get animatedAvatarURL() {
         return this.generateAvatarURL({ max_side: 256 }, true);
     }
