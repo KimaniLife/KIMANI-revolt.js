@@ -16,6 +16,10 @@ import {
  */
 const MESSAGE_DEPS_WAIT_MS = 2500;
 
+/** Retries of a failed unreads sync after Ready, with exponential backoff. */
+const UNREADS_SYNC_RETRIES = 4;
+const UNREADS_SYNC_RETRY_BASE_MS = 2000;
+
 type RaceOutcome<T> = { timedOut: false; value: T } | { timedOut: true };
 
 /**
@@ -52,6 +56,26 @@ function logDetachedFailure(packetType: string) {
 export class WebSocketClient {
     client: Client;
     ws?: WebSocket;
+
+    /**
+     * Load unreads for the Ready on `ws`, retrying a failure while that socket
+     * is current. Until a sync succeeds every channel reads as read (no badges
+     * anywhere) and opened chats are never acked (Channel.tsx waits on
+     * `isLoaded`), so one failed request on a bad network used to leave the
+     * badges dead until the next Ready — hours on a healthy socket.
+     */
+    private syncUnreads(ws: WebSocket, attempt = 0) {
+        const current = () => this.ws === ws && this.connected;
+        this.client.unreads?.sync().catch(() => {
+            if (attempt >= UNREADS_SYNC_RETRIES) return;
+            // Re-checked when the timer fires: a reconnect runs its own sync,
+            // and a closed socket (logout) must not keep calling the API.
+            setTimeout(
+                () => current() && this.syncUnreads(ws, attempt + 1),
+                UNREADS_SYNC_RETRY_BASE_MS * 2 ** attempt,
+            );
+        });
+    }
 
     heartbeat?: number;
     connected: boolean;
@@ -403,6 +427,24 @@ export class WebSocketClient {
                                 await yieldToEventLoop();
                             }
 
+                            // The server leaves a hidden (restricted) peer out of
+                            // Ready while still listing their DM: with every user
+                            // now hydrated, a DM peer still missing is known
+                            // unavailable, not merely loading.
+                            runInAction(() => {
+                                for (const channel of packet.channels) {
+                                    if (channel.channel_type !== "DirectMessage")
+                                        continue;
+                                    for (const id of channel.recipients) {
+                                        if (
+                                            id !== selfUserId &&
+                                            !this.client.users.has(id)
+                                        )
+                                            this.client.users.unavailable.add(id);
+                                    }
+                                }
+                            });
+
                             const emojis = packet.emojis ?? [];
                             for (let i = 0; i < emojis.length; i += HYDRATE_CHUNK) {
                                 const slice = emojis.slice(i, i + HYDRATE_CHUNK);
@@ -416,7 +458,7 @@ export class WebSocketClient {
 
                             // Unreads depend on channels (hydrated in phase 1);
                             // sync after the bulk so it never competes with paint.
-                            this.client.unreads?.sync();
+                            this.syncUnreads(ws);
 
                             break;
                         }
@@ -544,19 +586,34 @@ export class WebSocketClient {
                                 // resolves in microtasks; if a lookup is slow, let
                                 // it finish in the background instead of stalling
                                 // the whole connection behind it.
+                                // If a lookup fails the message is dropped, but
+                                // the channel still moves on: otherwise it shows
+                                // no unread badge until the next Ready.
+                                const advanceOnly = () =>
+                                    this.client.channels
+                                        .get(packet.channel)
+                                        ?.advanceLastMessageId(packet._id);
+
                                 const pending = resolveDeps();
-                                const outcome = await raceTimeout(
-                                    pending,
-                                    MESSAGE_DEPS_WAIT_MS,
-                                );
+                                let outcome: RaceOutcome<Channel>;
+                                try {
+                                    outcome = await raceTimeout(
+                                        pending,
+                                        MESSAGE_DEPS_WAIT_MS,
+                                    );
+                                } catch (err) {
+                                    advanceOnly();
+                                    throw err;
+                                }
                                 if (outcome.timedOut) {
-                                    pending.then(commit).catch((err) =>
+                                    pending.then(commit).catch((err) => {
+                                        advanceOnly();
                                         console.warn(
                                             "[Revolt.js WS] deferred message failed",
                                             packet._id,
                                             err,
-                                        ),
-                                    );
+                                        );
+                                    });
                                 } else {
                                     commit(outcome.value);
                                 }
@@ -983,7 +1040,7 @@ export class WebSocketClient {
                         }
 
                         case "ChannelAck": {
-                            this.client.unreads?.markRead(
+                            this.client.unreads?.advanceRead(
                                 packet.id,
                                 packet.message_id,
                             );

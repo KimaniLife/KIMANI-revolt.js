@@ -17,6 +17,7 @@ export {
     DEFAULT_PERMISSION_SERVER,
     DEFAULT_PERMISSION_VIEW_ONLY,
     U32_MAX,
+    UserFlags,
 } from "./permissions/definitions";
 export { calculatePermission } from "./permissions/calculator";
 

@@ -42,6 +42,14 @@ export class Channel {
     active: Nullable<boolean> = null;
 
     /**
+     * Id of the privileged (staff) user who opened this DM without a
+     * friendship. Both sides may message in it, including a restricted
+     * member, so the app can reach anyone and mark the DM as "Admin".
+     * @requires `DirectMessage`
+     */
+    staff_id: Nullable<string> = null;
+
+    /**
      * The ID of the group owner.
      * @requires `Group`
      */
@@ -334,6 +342,7 @@ export class Channel {
         switch (data.channel_type) {
             case "DirectMessage": {
                 this.active = toNullable(data.active);
+                this.staff_id = toNullable(data.staff_id);
                 this.recipient_ids = toNullable(data.recipients);
                 this.last_message_id = toNullable(data.last_message_id);
                 break;
@@ -412,6 +421,7 @@ export class Channel {
         }
 
         apply("active");
+        apply("staff_id");
         apply("owner", "owner_id");
         apply("permissions");
         apply("default_permissions");
@@ -563,8 +573,14 @@ export class Channel {
 
         const sent = this.client.messages.createObj(message, true);
         // The socket echo is dropped once this response stored the message,
-        // so the channel pointer moves here.
+        // so the channel pointer moves — and our own message is acked — here
+        // (the echo's auto-ack never runs; the chat came back as "1"). Only
+        // while it is the newest: a reply that arrived before this response
+        // must not be un-read.
         this.advanceLastMessageId(sent._id);
+        if (this.last_message_id === sent._id) {
+            this.client.unreads?.markRead(this._id, sent._id, true);
+        }
         return sent;
     }
 

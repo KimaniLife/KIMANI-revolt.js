@@ -11,6 +11,9 @@ import { ulid } from "ulid";
 import { Channel } from "../maps/Channels";
 import { Server } from "../maps/Servers";
 
+/** Most missed acks re-sent per sync (see `sync`). */
+const MAX_REACKS_PER_SYNC = 10;
+
 export interface INotificationChecker {
     isMuted(target?: Channel | Server): boolean;
 }
@@ -47,6 +50,7 @@ export default class Unreads {
      */
     async sync() {
         const unreads = await this.client.syncFetchUnreads();
+        const reack: [string, string][] = [];
         runInAction(() => {
             this.loaded = true;
             for (const unread of unreads) {
@@ -57,16 +61,26 @@ export default class Unreads {
                 // may not have reached the server yet (e.g. resync on
                 // reconnect right after sending a message).
                 const existing = this.channels.get(_id.channel);
-                if (
-                    existing?.last_id &&
-                    (data.last_id ?? "0").localeCompare(existing.last_id) < 1
-                ) {
+                const serverId = data.last_id ?? "0";
+                if (existing?.last_id && serverId <= existing.last_id) {
+                    // Local is ahead: an ack never reached the server (read
+                    // while offline, then reconnected). Re-send it, or the chat
+                    // comes back as unread on the next start.
+                    if (serverId < existing.last_id) {
+                        reack.push([_id.channel, existing.last_id]);
+                    }
                     continue;
                 }
 
                 this.channels.set(_id.channel, data);
             }
         });
+
+        // Capped so a large catch-up (or a skewed device clock after "mark
+        // server as read") converges over a few syncs instead of a burst.
+        for (const [channel, last_id] of reack.slice(0, MAX_REACKS_PER_SYNC)) {
+            this.client.channels.get(channel)?.ack(last_id);
+        }
     }
 
     /**
@@ -89,8 +103,10 @@ export default class Unreads {
      * @param last_id New last ID
      */
     @action markUnread(channel_id: string, last_id: string) {
+        // The stored entry, not getUnread(): before the first sync that is a
+        // placeholder which, once stored, would freeze the channel as read.
         this.channels.set(channel_id, {
-            ...this.getUnread(channel_id),
+            ...this.channels.get(channel_id),
             last_id,
         });
     }
@@ -101,12 +117,33 @@ export default class Unreads {
      * @param message_id Target message ID
      */
     @action markMention(channel_id: string, message_id: string) {
-        const unread = this.getUnread(channel_id);
+        // Stored entry only — see markUnread.
+        const unread = this.channels.get(channel_id);
         this.channels.set(channel_id, {
             last_id: "0",
             ...unread,
             mentions: [...(unread?.mentions ?? []), message_id],
         });
+    }
+
+    /**
+     * Apply a read position reported by the server (ChannelAck), only if it
+     * moves forward. Acks are echoed to every session and can arrive out of
+     * order (our own delayed ack, another device), and an older one used to
+     * turn a chat the member just read back to unread. (So a "mark unread"
+     * made on another device no longer shows here; the app has none.)
+     * @param channel_id Target channel ID
+     * @param message_id Acknowledged message ID
+     */
+    @action advanceRead(channel_id: string, message_id: string) {
+        const entry = this.channels.get(channel_id);
+        if (!entry?.last_id || message_id > entry.last_id) {
+            // Mentions up to the read position are read; newer ones stay.
+            this.channels.set(channel_id, {
+                last_id: message_id,
+                mentions: entry?.mentions?.filter((m) => m > message_id),
+            });
+        }
     }
 
     /**

@@ -9,6 +9,19 @@ export const UserPermission = {
 };
 
 /**
+ * Bits of `User.flags` (Revolt `users.flags`).
+ */
+export const UserFlags = {
+    Suspended: 1,
+    Deleted: 2,
+    Banned: 4,
+    Spam: 8,
+    /// Frozen by an admin: read-only everywhere except staff DMs, and hidden
+    /// from other members (Kimani member lifecycle).
+    Restricted: 16,
+};
+
+/**
  * Permission against Server / Channel
  */
 export const Permission = {
