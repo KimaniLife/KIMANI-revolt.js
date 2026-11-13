@@ -573,8 +573,14 @@ export class Channel {
 
         const sent = this.client.messages.createObj(message, true);
         // The socket echo is dropped once this response stored the message,
-        // so the channel pointer moves here.
+        // so the channel pointer moves — and our own message is acked — here
+        // (the echo's auto-ack never runs; the chat came back as "1"). Only
+        // while it is the newest: a reply that arrived before this response
+        // must not be un-read.
         this.advanceLastMessageId(sent._id);
+        if (this.last_message_id === sent._id) {
+            this.client.unreads?.markRead(this._id, sent._id, true);
+        }
         return sent;
     }
 
